@@ -16,6 +16,33 @@ usage()
    echo
 }
 
+docker info > /dev/null 2>&1
+if [ $? != 0 ]; then
+    echo "Docker is not installed on the system.Please install docker to proceed forward"
+    echo "Reference link to install : https://docs.docker.com/engine/install/"
+    exit
+fi
+
+os_vers=`uname -s` > /dev/null 2>&1
+if [ "$os_vers" == "Darwin" ]; then
+     memory_avilable_mac=$(system_profiler SPHardwareDataType | grep "Memory" | awk '{print $2}')  &>/dev/null
+       if  [ $memory_avilable_mac -lt 32 ] ; then
+           echo "RAM needed to run seed node is 32 GB or more on MACBook."
+           echo "Looks like sufficent RAM is not avilable on this machine"
+           echo "Please try to spin up seed node on a machine which has sufficent memory"
+           exit
+       fi
+fi
+if [ "$os_vers" == "Linux" ]; then
+       memory_avilable_linux=$(cat /proc/meminfo | grep MemTotal | awk '{print $2}')  &>/dev/null 
+         if  [ $memory_avilable_linux -lt 25165824 ]; then
+             echo "RAM needed to run seed node is 24 GB or more on linux nodes."
+             echo "Looks like sufficent RAM is not avilable on this machine"
+             echo "Please try to spin up seed node on a machine which has sufficent memory"
+             exit
+         fi
+fi
+
 while [ $# -gt 0 ]
 do
   case "$1" in
