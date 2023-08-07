@@ -16,13 +16,7 @@ usage()
    echo
 }
 
-docker info > /dev/null 2>&1
-if [ $? != 0 ]; then
-    echo "Docker is not installed on the system.Please install docker to proceed forward"
-    echo "Reference link to install : https://docs.docker.com/engine/install/"
-    exit
-fi
-
+#checking if required memory is present or not
 os_vers=`uname -s` > /dev/null 2>&1
 if [ "$os_vers" == "Darwin" ]; then
      memory_avilable_mac=$(system_profiler SPHardwareDataType | grep "Memory" | awk '{print $2}')  &>/dev/null
@@ -42,6 +36,44 @@ if [ "$os_vers" == "Linux" ]; then
              exit
          fi
 fi
+
+#check if docker is installed and running
+docker info > /dev/null 2>&1
+if [ $? != 0 ]; then
+    echo "Docker is not installed/not-running on the system.Please install/start docker to proceed forward"
+    echo "Reference link to install : https://docs.docker.com/engine/install/"
+    exit
+fi
+
+#check connectivity to docker hub
+docker run hello-world  > /dev/null 2>&1
+if [ $? != 0 ]; then
+    echo "Docker is installed on the system but we are not able to pull images from docker hub"
+    echo "Please check internet connectivity or if the machine is behind a proxy"
+    echo "If the machine is running behind a proxy please update /etc/environment with appropriate  proxy settings accordingly"
+    exit
+fi
+
+#check if ports used by datafabric is already used by some other process
+docker ps -a | grep edf-seed-container > /dev/null 2>&1
+if [ $? != 0 ]; then
+   seednodeports='7221 5660 5692 5724 5756 8443 8188 7222 5181'
+   pc=0
+   for port in $seednodeports
+   do
+    result=`lsof -i:${port} | grep LISTEN`
+    retval=$?
+    if [ $retval -eq 0 ]; then
+      echo "${port} port is being used"
+      pc=1
+    fi
+  done
+if [ $pc -eq 1 ]; then
+   echo "it seems to be that some existing application using the required ports so please make sure to clean them up before attempting again"
+   exit 1
+fi
+fi
+
 
 while [ $# -gt 0 ]
 do
@@ -123,6 +155,7 @@ else
         if [ "$ANS" == "1" ]
         then
                 CID=$(docker ps -a | grep edf-seed-container | awk '{ print $1 }' )
+                docker stop $CID > /dev/null 2>&1
                 docker rm -f $CID > /dev/null 2>&1
                 STATUS='NOTRUNNING'
         else
@@ -144,7 +177,7 @@ then
                 if [ $? -ne 0 ]
                 then
                         echo "Please enter the local sudo password for $(whoami)"
-                        sudo sed -i '' '/'${hostName}'/d' /etc/hosts
+                        sudo sed -i '' '/'${hostName}'/d' /etc/hosts &>/dev/null
                         sudo  sh -c "echo  \"${IP}      ${hostName}  ${clusterName}\" >> /etc/hosts"
                         sudo sed -i '' '/'${hostName}'/d' /opt/mapr/conf/mapr-clusters.conf &>/dev/null
             		sudo /opt/mapr/server/configure.sh -c -C ${hostName}  -N ${clusterName} > /dev/null 2>&1
@@ -162,7 +195,7 @@ then
                 # Change the server side settings
                 docker start ${CID}
                 echo "Please enter the local sudo password for $(whoami)"
-                sudo sed -i '' '/'${hostName}'/d' /etc/hosts
+                sudo sed -i '' '/'${hostName}'/d' /etc/hosts &>/dev/null
                 sudo sh -c "echo  \"${IP}       ${hostName}  ${clusterName}\" >> /etc/hosts"
                 sudo sed -i '' '/'${hostName}'/d' /opt/mapr/conf/mapr-clusters.conf &>/dev/null
         sudo /opt/mapr/server/configure.sh -c -C ${hostName}  -N ${clusterName} > /dev/null 2>&1
@@ -177,26 +210,71 @@ else
         runMaprImage
 
         sudo /opt/mapr/server/configure.sh -c -C ${hostName}  -N ${clusterName} > /dev/null 2>&1
-        sudo sed -i '' '/'${hostName}'/d' /etc/hosts
+        sudo sed -i '' '/'${hostName}'/d' /etc/hosts &>/dev/null
         sudo  sh -c "echo  \"${IP}      ${hostName}  ${clusterName}\" >> /etc/hosts"
         sudo sed -i '' '/'${hostName}'/d' /opt/mapr/conf/mapr-clusters.conf &>/dev/null
+        
+        services_up=0
+        sleep_total=600
+        sleep_counter=0
+        if [ "$os_vers" == "Darwin" ]; then
+           while [[ $sleep_counter -le $sleep_total ]]
+            do
+             curl -k -X GET "https://edf-installer.hpe.com:8443/rest/node/list?columns=svc" -u mapr:mapr123 &>/dev/null 
+             if [ $? -ne 0 ];then
+                echo "services required for Ezmeral Data fabric are  coming up"
+                sleep 60;
+                sleep_counter=$((sleep_counter+60))
+             else
+                services_up=1
+                break
+             fi
+           done
+       fi
+       if [ "$os_vers" == "Linux" ]; then
+           while [[ $sleep_counter -le $sleep_total ]]
+            do
+             curl -k -X GET https://`hostname -f`:8443/rest/node/list?columns=svc -u mapr:mapr123 &>/dev/null 
+             if [ $? -ne 0 ];then
+                echo "services required for Ezmeral Data fabric are  coming up"
+                sleep 60;
+                sleep_counter=$((sleep_counter+60))
+             else
+                services_up=1
+                break
+             fi
+           done
+       fi
 
-        echo
-        echo "Docker Container is coming up...."
-        echo "Client has been configured with the docker container."
-        echo
-        echo "It will take 5 to 10 mins for all the services to be up and running "
-	if [   "${PUBLICIPV4DNS}" == "" ]; then
+
+        if [ $services_up -eq 1 ]; then
+           echo
+           echo "Client has been configured with the docker container."
+           echo
+	   if [   "${PUBLICIPV4DNS}" == "" ]; then
         	echo 
         	echo "Login to DF UI at https://"${MAPR_EXTERNAL}":8443/app/dfui using root/mapr to deploy data fabric"
         	echo "For user documentation, see https://docs.ezmeral.hpe.com/datafabric/home/installation/installation_main.html"
-        	echo
-    	else
+                echo "If the machine hosting seed node is running behind a proxy please update /etc/environment on seed node with appropriate  proxy settings accordingly"
+                echo
+    	   else
         	echo 
         	echo "Login to DF UI at https://"${PUBLICIPV4DNS}":8443/app/dfui using root/mapr to deploy data fabric"
         	echo "For user documentation, see https://docs.ezmeral.hpe.com/datafabric/home/installation/installation_main.html"
-        	echo
-    fi
+                echo "If the machine hosting seed node is running behind a proxy please update /etc/environment on seed node with appropriate  proxy settings accordingly"
+
+          fi
+       else
+          echo 
+          echo "services didnt come up in stipulated 10 mins time"
+          echo "please login to the container using ssh root@localhost -p 2222 with mapr as password and check further"
+          echo
+          echo "once all services are up fabric UI is avilable at https://"${MAPR_EXTERNAL}":8443/app/dfui  and fabrics can be deployed using root/mapr"
+          echo
+          echo "If the machine hosting seed node is running behind a proxy please update /etc/environment on seed node with appropriate  proxy settings accordingly"
+          echo	
+       fi
+
     	
 fi
 
