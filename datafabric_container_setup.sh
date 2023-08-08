@@ -7,14 +7,16 @@ usage()
 {
    echo "This script will take of deploying edf on seed node."
    echo
-   echo "Syntax: ./datafabric_container_setup.sh [-i|--image] [-p|--publicipv4dns]"
+   echo "Syntax: ./datafabric_container_setup.sh [-i|--image] [-p|--publicipv4dns] [-f|--proxyfiledetails]"
    echo "options:"
    echo "-i|--image this is optional,By defaul it will pull image having latest tag, 
-         we can also provide image which has custom tag example:maprtech/edf-seed-container:7.3.0_9.1.1"
+         we can also provide image which has custom tag example:maprtech/edf-seed-container:7.4.0_9.1.2"
    echo "-p|--publicipv4dns is the public IPv4 DNS and needed for cloud deployed seed nodes. Note that both inbound and outbound trafic on port 8443              
          needs to be enabled on the cloud instance. Otherwise, the Data Fabric UI cannot be acessible"
+   echo "-f|--proxyfiledetails is the location of file from where proxy  details provided by user are copied to docker container."              
    echo
 }
+
 
 #checking if required memory is present or not
 os_vers=`uname -s` > /dev/null 2>&1
@@ -22,7 +24,7 @@ if [ "$os_vers" == "Darwin" ]; then
      memory_avilable_mac=$(system_profiler SPHardwareDataType | grep "Memory" | awk '{print $2}')  &>/dev/null
        if  [ $memory_avilable_mac -lt 32 ] ; then
            echo "RAM needed to run seed node is 32 GB or more on MACBook."
-           echo "Looks like sufficent RAM is not avilable on this machine"
+           echo "Looks like sufficent RAM is not available on this machine"
            echo "Please try to spin up seed node on a machine which has sufficent memory"
            exit
        fi
@@ -31,7 +33,7 @@ if [ "$os_vers" == "Linux" ]; then
        memory_avilable_linux=$(cat /proc/meminfo | grep MemTotal | awk '{print $2}')  &>/dev/null 
          if  [ $memory_avilable_linux -lt 25165824 ]; then
              echo "RAM needed to run seed node is 24 GB or more on linux nodes."
-             echo "Looks like sufficent RAM is not avilable on this machine"
+             echo "Looks like sufficent RAM is not available on this machine"
              echo "Please try to spin up seed node on a machine which has sufficent memory"
              exit
          fi
@@ -49,9 +51,15 @@ fi
 docker run hello-world  > /dev/null 2>&1
 if [ $? != 0 ]; then
     echo "Docker is installed on the system but we are not able to pull images from docker hub"
-    echo "Please check internet connectivity or if the machine is behind a proxy"
-    echo "If the machine is running behind a proxy please update /etc/environment with appropriate  proxy settings accordingly"
+    echo "Please check internet connectivity or if the machine is behind a proxy and take appropriate action accordingly"
     exit
+fi
+
+#remove the hello-world image we ran in earler step
+CID_Hello=$(docker ps -a | grep hello-world | awk '{ print $1 }' | tail -1  )
+if [ -n "$CID_Hello" ]; then
+   docker stop $CID_Hello > /dev/null 2>&1
+   docker rm -f $CID_Hello > /dev/null 2>&1
 fi
 
 #check if ports used by datafabric is already used by some other process
@@ -82,6 +90,8 @@ do
   IMAGE=$1;;
   -p|--publicipv4dns) shift;
   PUBLICIPV4DNS=$1;;
+  -f|--proxyfiledetails) shift;
+  PROXYFILEDETAILS=$1;;
   *) shift;
    usage
    exit;;
@@ -156,6 +166,7 @@ else
         then
                 CID=$(docker ps -a | grep edf-seed-container | awk '{ print $1 }' )
                 docker stop $CID > /dev/null 2>&1
+                docker kill $CID > /dev/null 2>&1
                 docker rm -f $CID > /dev/null 2>&1
                 STATUS='NOTRUNNING'
         else
@@ -214,6 +225,19 @@ else
         sudo  sh -c "echo  \"${IP}      ${hostName}  ${clusterName}\" >> /etc/hosts"
         sudo sed -i '' '/'${hostName}'/d' /opt/mapr/conf/mapr-clusters.conf &>/dev/null
         
+        os_vers=`uname -s` > /dev/null 2>&1 
+        if [ "$os_vers" == "Darwin" ] && [ "${PROXYFILEDETAILS}" != "" ]; then
+           `docker cp  $PROXYFILEDETAILS $CID:/etc/environment` > /dev/null 2>&1
+        fi
+        if [ "$os_vers" == "Linux" ]  && [ "${PROXYFILEDETAILS}" != "" ]; then
+           `docker cp  $PROXYFILEDETAILS $CID:/etc/environment` > /dev/null 2>&1
+        fi
+        if  [ "$os_vers" == "Linux" ]  && [ "${PROXYFILEDETAILS}" == "" ]; then
+           `cat /etc/environment >/tmp/proxyseednode` > /dev/null 2>&1
+           `cat /etc/profile.d/proxy.sh >>/tmp/proxyseednode` > /dev/null 2>&1
+           `docker cp /tmp/proxyseednode $CID:/etc/environment` 
+           `rm -rf /tmp/proxyseednode` > /dev/null 2>&1
+        fi 
         services_up=0
         sleep_total=600
         sleep_counter=0
@@ -252,31 +276,21 @@ else
            echo "Client has been configured with the docker container."
            echo
 	   if [   "${PUBLICIPV4DNS}" == "" ]; then
-        	echo 
         	echo "Login to DF UI at https://"${MAPR_EXTERNAL}":8443/app/dfui using root/mapr to deploy data fabric"
         	echo "For user documentation, see https://docs.ezmeral.hpe.com/datafabric/home/installation/installation_main.html"
-                echo "If the machine hosting seed node is running behind a proxy please update /etc/environment on seed node with appropriate  proxy settings accordingly"
                 echo
     	   else
-        	echo 
         	echo "Login to DF UI at https://"${PUBLICIPV4DNS}":8443/app/dfui using root/mapr to deploy data fabric"
         	echo "For user documentation, see https://docs.ezmeral.hpe.com/datafabric/home/installation/installation_main.html"
-                echo "If the machine hosting seed node is running behind a proxy please update /etc/environment on seed node with appropriate  proxy settings accordingly"
 
           fi
        else
           echo 
           echo "services didnt come up in stipulated 10 mins time"
           echo "please login to the container using ssh root@localhost -p 2222 with mapr as password and check further"
-          echo
-          echo "once all services are up fabric UI is avilable at https://"${MAPR_EXTERNAL}":8443/app/dfui  and fabrics can be deployed using root/mapr"
-          echo
-          echo "If the machine hosting seed node is running behind a proxy please update /etc/environment on seed node with appropriate  proxy settings accordingly"
+          echo "once all services are up fabric UI is available at https://"${MAPR_EXTERNAL}":8443/app/dfui  and fabrics can be deployed using root/mapr"
           echo	
        fi
 
     	
 fi
-
-            
-   
